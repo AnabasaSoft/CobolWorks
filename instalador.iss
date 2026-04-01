@@ -11,6 +11,12 @@ OutputDir=Output
 OutputBaseFilename=CobolWorks-Windows-Installer
 Compression=lzma
 SolidCompression=yes
+; --- NUEVO: Icono para el ejecutable del instalador en sí ---
+SetupIconFile=icon.ico
+
+; --- NUEVO: Icono que se mostrará en "Agregar o quitar programas" de Windows ---
+UninstallDisplayIcon={app}\CobolWorks.exe
+
 
 [Tasks]
 Name: "desktopicon"; Description: "Crear un acceso directo en el escritorio"; GroupDescription: "Accesos directos:"
