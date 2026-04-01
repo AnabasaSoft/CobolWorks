@@ -25,3 +25,18 @@ target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/qt6 /usr/include
 
 # Enlazamos Qt y la librería de QScintilla directamente por el nombre de su binario (.so)
 target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets qscintilla2_qt6)
+
+# --- EMPAQUETADO CON CPACK PARA LINUX Y WINDOWS ---
+set(CPACK_PACKAGE_NAME "CobolWorks")
+set(CPACK_PACKAGE_VERSION "1.0.0")
+set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "IDE moderno para COBOL")
+set(CPACK_DEBIAN_PACKAGE_MAINTAINER "AnabasaSoft")
+set(CPACK_RPM_PACKAGE_AUTOREQPROV "ON")
+
+if(LINUX)
+    set(CPACK_GENERATOR "DEB;RPM;TGZ")
+elseif(WIN32)
+    set(CPACK_GENERATOR "ZIP")
+endif()
+
+include(CPack)

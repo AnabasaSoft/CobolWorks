@@ -1,0 +1,61 @@
+name: Compilar CobolWorks (Linux y Windows)
+
+on:
+  push:
+    tags:
+      - 'v*.*.*' # Solo se ejecuta cuando creas una etiqueta de versión (ej: v1.0.0)
+
+jobs:
+  build-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar dependencias de Qt6 y Compiladores
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential cmake qt6-base-dev libqt6scintilla2-dev gnucobol gdb rpm
+
+      - name: Configurar CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --config Release -j 4
+
+      - name: Generar Paquetes (DEB, RPM, TAR.GZ)
+        working-directory: build
+        run: cpack
+
+      - name: Subir artefactos Linux
+        uses: actions/upload-artifact@v4
+        with:
+          name: CobolWorks-Linux
+          path: build/CobolWorks-1.0.0-*
+
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Descargar código
+        uses: actions/checkout@v4
+
+      - name: Instalar Qt6
+        uses: jurplel/install-qt-action@v3
+        with:
+          version: '6.5.0'
+
+      - name: Configurar CMake
+        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compilar
+        run: cmake --build build --config Release
+
+      - name: Generar Paquete ZIP
+        working-directory: build
+        run: cpack
+
+      - name: Subir artefactos Windows
+        uses: actions/upload-artifact@v4
+        with:
+          name: CobolWorks-Windows
+          path: build/CobolWorks-1.0.0-*.zip
