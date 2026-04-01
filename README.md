@@ -18,7 +18,7 @@
 ---
 
 <p align="center">
-  <img src="captura.jpg" alt="Captura de pantalla de CobolWorks IDE" width="800"/>
+  <img src="captura.png" alt="Captura de pantalla de CobolWorks IDE" width="800"/>
 </p>
 
 ---
