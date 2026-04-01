@@ -8,7 +8,7 @@ set(CMAKE_AUTOUIC ON)
 set(CMAKE_AUTORCC ON)
 
 # Encontramos Qt6
-find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core Gui Widgets Network)
 
 # Definimos el ejecutable
 add_executable(${PROJECT_NAME}
@@ -24,7 +24,17 @@ add_executable(${PROJECT_NAME}
 target_include_directories(${PROJECT_NAME} PRIVATE /usr/include/qt6 /usr/include)
 
 # Enlazamos Qt y la librería de QScintilla directamente por el nombre de su binario (.so)
-target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets qscintilla2_qt6)
+target_link_libraries(${PROJECT_NAME} PRIVATE Qt6::Widgets Qt6::Core Qt6::Gui Qt6::Network qscintilla2_qt6)
+
+# --- REGLAS DE INSTALACIÓN PARA LINUX ---
+# Le decimos que instale todo en la carpeta /opt/CobolWorks para no ensuciar el sistema
+set(CMAKE_INSTALL_PREFIX "/opt/CobolWorks")
+
+# Instalamos el ejecutable principal
+install(TARGETS CobolWorks DESTINATION .)
+
+# Instalamos la carpeta de idiomas (copia el contenido de build/idiomas a /opt/CobolWorks/idiomas)
+install(DIRECTORY ${CMAKE_BINARY_DIR}/idiomas DESTINATION .)
 
 # --- EMPAQUETADO CON CPACK PARA LINUX Y WINDOWS ---
 set(CPACK_PACKAGE_NAME "CobolWorks")

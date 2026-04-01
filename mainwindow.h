@@ -11,6 +11,8 @@
 #define MAINWINDOW_H
 
 #include <QMainWindow>
+#include <QNetworkAccessManager>
+#include <QNetworkReply>
 #include <Qsci/qsciscintilla.h>
 #include <QTabWidget>
 #include <QTreeView>
@@ -66,6 +68,8 @@ private slots:
     void saltarAFlujo(class QTreeWidgetItem *item, int column);
     void saltarALineaEsquema(class QListWidgetItem *item);
     void saltarAErrorConsola();
+    void comprobarActualizaciones();
+    void procesarRespuestaActualizacion(QNetworkReply *reply);
 
 private:
     QTabWidget *tabWidget;
@@ -92,6 +96,8 @@ private:
     void retraducirInterfaz();
     bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
+    QNetworkAccessManager *managerActualizaciones;
+    const QString VERSION_ACTUAL = "1.0.0";
 };
 
 #endif // MAINWINDOW_H

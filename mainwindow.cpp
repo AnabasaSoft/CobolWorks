@@ -8,6 +8,11 @@
  *****************************************************************************/
 
 #include "mainwindow.h"
+#include <QJsonDocument>
+#include <QJsonObject>
+#include <QDesktopServices>
+#include <QUrl>
+#include <QMessageBox>
 #include <QVBoxLayout>
 #include <QFont>
 #include <QKeyEvent>
@@ -69,6 +74,11 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // --- NUEVO: Restaurar tamaño de ventana y posición de los paneles ---
     restoreGeometry(settings.value("geometria").toByteArray());
     restoreState(settings.value("estado_paneles").toByteArray());
+
+    // Comprobador silencioso de actualizaciones al arrancar
+    managerActualizaciones = new QNetworkAccessManager(this);
+    connect(managerActualizaciones, &QNetworkAccessManager::finished, this, &MainWindow::procesarRespuestaActualizacion);
+    comprobarActualizaciones();
 
     nuevoArchivo();
 }
@@ -1612,4 +1622,42 @@ void MainWindow::depurarCodigo() {
 
 #endif
 
+}
+
+void MainWindow::comprobarActualizaciones() {
+    // Busca el archivo de control en tu web pública de GitHub Pages
+    QUrl url("https://anabasasoft.github.io/version.json");
+    QNetworkRequest request(url);
+
+    // Evitamos que guarde el archivo en caché para que siempre lea la versión real
+    request.setAttribute(QNetworkRequest::CacheLoadControlAttribute, QNetworkRequest::AlwaysNetwork);
+    managerActualizaciones->get(request);
+}
+
+void MainWindow::procesarRespuestaActualizacion(QNetworkReply *reply) {
+    if (reply->error() == QNetworkReply::NoError) {
+        QByteArray respuesta = reply->readAll();
+        QJsonDocument jsonDoc = QJsonDocument::fromJson(respuesta);
+
+        if (!jsonDoc.isNull() && jsonDoc.isObject()) {
+            QJsonObject jsonObj = jsonDoc.object();
+            QString versionOnline = jsonObj["version"].toString();
+            QString enlaceDescarga = jsonObj["enlace"].toString();
+
+            // Comparamos versiones. Si la online es distinta a la nuestra, saltamos la alerta.
+            if (!versionOnline.isEmpty() && versionOnline != VERSION_ACTUAL) {
+                QMessageBox msgBox(this);
+                msgBox.setWindowTitle(tr("Actualización de CobolWorks"));
+                msgBox.setText(tr("¡Hay una nueva versión de CobolWorks disponible!\n\nVersión actual: %1\nNueva versión: %2").arg(VERSION_ACTUAL, versionOnline));
+                msgBox.setInformativeText(tr("¿Quieres abrir el navegador para descargarla ahora?"));
+                msgBox.setStandardButtons(QMessageBox::Yes | QMessageBox::No);
+                msgBox.setDefaultButton(QMessageBox::Yes);
+
+                if (msgBox.exec() == QMessageBox::Yes) {
+                    QDesktopServices::openUrl(QUrl(enlaceDescarga));
+                }
+            }
+        }
+    }
+    reply->deleteLater();
 }
