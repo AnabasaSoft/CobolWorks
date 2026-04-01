@@ -3,7 +3,7 @@ name: Compilar CobolWorks (Linux y Windows)
 on:
   push:
     tags:
-      - 'v*.*.*' # Solo se ejecuta cuando creas una etiqueta de versión (ej: v1.0.0)
+      - 'v*.*.*'
 
 jobs:
   build-linux:
@@ -12,10 +12,11 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
-      - name: Instalar dependencias de Qt6 y Compiladores
+      - name: Instalar dependencias (Ubuntu)
+        # Aquí hemos corregido el nombre del paquete de QScintilla
         run: |
           sudo apt-get update
-          sudo apt-get install -y build-essential cmake qt6-base-dev libqt6scintilla2-dev gnucobol gdb rpm
+          sudo apt-get install -y build-essential cmake qt6-base-dev libqscintilla2-qt6-dev gnucobol gdb rpm
 
       - name: Configurar CMake
         run: cmake -B build -DCMAKE_BUILD_TYPE=Release
@@ -23,7 +24,7 @@ jobs:
       - name: Compilar
         run: cmake --build build --config Release -j 4
 
-      - name: Generar Paquetes (DEB, RPM, TAR.GZ)
+      - name: Generar Paquetes (DEB, RPM, TGZ)
         working-directory: build
         run: cpack
 
@@ -39,18 +40,26 @@ jobs:
       - name: Descargar código
         uses: actions/checkout@v4
 
-      - name: Instalar Qt6
-        uses: jurplel/install-qt-action@v3
+      - name: Configurar Entorno MSYS2 (MinGW64)
+        uses: msys2/setup-msys2@v2
         with:
-          version: '6.5.0'
+          msystem: MINGW64
+          update: true
+          install: >-
+            mingw-w64-x86_64-toolchain
+            mingw-w64-x86_64-cmake
+            mingw-w64-x86_64-qt6-base
+            mingw-w64-x86_64-qscintilla-qt6
+            mingw-w64-x86_64-gnucobol
 
-      - name: Configurar CMake
-        run: cmake -B build -DCMAKE_BUILD_TYPE=Release
-
-      - name: Compilar
-        run: cmake --build build --config Release
+      - name: Configurar y Compilar con MinGW
+        shell: msys2 {0}
+        run: |
+          cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --config Release
 
       - name: Generar Paquete ZIP
+        shell: msys2 {0}
         working-directory: build
         run: cpack
 
