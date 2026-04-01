@@ -13,7 +13,6 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Instalar dependencias (Ubuntu)
-        # Aquí hemos corregido el nombre del paquete de QScintilla
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential cmake qt6-base-dev libqscintilla2-qt6-dev gnucobol gdb rpm
@@ -58,13 +57,21 @@ jobs:
           cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release
 
-      - name: Generar Paquete ZIP
+      - name: Empaquetar dependencias y aislar binarios
         shell: msys2 {0}
-        working-directory: build
-        run: cpack
+        run: |
+          windeployqt build/CobolWorks.exe
+          mkdir -p build/Release-Windows
+          cp build/CobolWorks.exe build/Release-Windows/
+          cp build/*.dll build/Release-Windows/ || true
+          cp -r build/platforms build/Release-Windows/ || true
+          cp -r build/styles build/Release-Windows/ || true
+          cp -r build/imageformats build/Release-Windows/ || true
+          cp -r build/tls build/Release-Windows/ || true
+          cp -r build/idiomas build/Release-Windows/ || true
 
       - name: Subir artefactos Windows
         uses: actions/upload-artifact@v4
         with:
           name: CobolWorks-Windows
-          path: build/CobolWorks-1.0.0-*.zip
+          path: build/Release-Windows/
