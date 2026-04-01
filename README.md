@@ -45,7 +45,7 @@ Este proyecto es **100% Código Abierto**. Puedes clonar el repositorio y compil
 
 Sin embargo, si prefieres **evitar la configuración de compiladores** y quieres un instalador listo para usar — y de paso apoyar el desarrollo — puedes adquirir el binario oficial compilado y firmado para **Windows y Linux**:
 
-👉 **[Descargar CobolWorks Pro (Ejecutable listo para usar)](#enlace-a-tu-gumroad)**
+👉 **[Descargar CobolWorks Pro (Ejecutable listo para usar)](https://anabasa.gumroad.com/l/zyonk)**
 
 ---
 
