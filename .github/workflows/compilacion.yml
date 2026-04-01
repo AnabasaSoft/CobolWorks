@@ -70,8 +70,11 @@ jobs:
           cp -r build/tls build/Release-Windows/ || true
           cp -r build/idiomas build/Release-Windows/ || true
 
-      - name: Subir artefactos Windows
+      - name: Crear Instalador (Inno Setup)
+        run: iscc instalador.iss
+
+      - name: Subir Instalador Windows
         uses: actions/upload-artifact@v4
         with:
-          name: CobolWorks-Windows
-          path: build/Release-Windows/
+          name: CobolWorks-Windows-Installer
+          path: Output/CobolWorks-Windows-Installer.exe
