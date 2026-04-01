@@ -36,3 +36,7 @@ __pycache__/
 *~
 *.kate-swp
 .directory
+
+
+#Mios
+actualiza.sh

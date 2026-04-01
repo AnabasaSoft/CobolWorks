@@ -49,16 +49,27 @@
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Inicializamos el sistema de traducción
     traductorAplicacion = new QTranslator(this);
-    rutaIdiomaActual = ""; // Empezamos en Español Nativo
+
+    // --- NUEVO: Cargar idioma guardado ANTES de crear la interfaz ---
+    QSettings settings("AnabasaSoft", "CobolWorks");
+    rutaIdiomaActual = settings.value("idioma_interfaz", "").toString();
+
+    if (!rutaIdiomaActual.isEmpty() && traductorAplicacion->load(rutaIdiomaActual)) {
+        qApp->installTranslator(traductorAplicacion);
+    }
 
     // CONFIGURACIÓN DEL ICONO
     setWindowIcon(QIcon(":/icon.png"));
 
     setWindowTitle("CobolWorks");
-    // HEMOS QUITADO showMaximized() DE AQUÍ
 
     crearInterfaz();
     crearMenus();
+
+    // --- NUEVO: Restaurar tamaño de ventana y posición de los paneles ---
+    restoreGeometry(settings.value("geometria").toByteArray());
+    restoreState(settings.value("estado_paneles").toByteArray());
+
     nuevoArchivo();
 }
 
@@ -67,6 +78,7 @@ MainWindow::~MainWindow() {}
 void MainWindow::crearInterfaz() {
     // --- Panel Izquierdo: Árbol de archivos ---
     QDockWidget *dock = new QDockWidget(tr("Explorador"), this);
+    dock->setObjectName("panelExplorador");
     dock->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     dock->setStyleSheet("QDockWidget { color: #E2F1E7; } QDockWidget::title { background: #1E3E62; padding-left: 5px; }");
 
@@ -90,6 +102,7 @@ void MainWindow::crearInterfaz() {
 
     // --- Panel Derecho: Estructura COBOL ---
     QDockWidget *dockEsquema = new QDockWidget(tr("Estructura COBOL"), this);
+    dockEsquema->setObjectName("panelEsquema");
     dockEsquema->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     dockEsquema->setStyleSheet("QDockWidget { color: #E2F1E7; } QDockWidget::title { background: #1E3E62; padding-left: 5px; }");
 
@@ -101,6 +114,7 @@ void MainWindow::crearInterfaz() {
 
     // --- Panel Derecho: Flujo COBOL ---
     QDockWidget *dockFlujo = new QDockWidget(tr("Flujo de Ejecución"), this);
+    dockFlujo->setObjectName("panelFlujo");
     dockFlujo->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
     dockFlujo->setStyleSheet("QDockWidget { color: #E2F1E7; } QDockWidget::title { background: #1E3E62; padding-left: 5px; }");
 
@@ -715,6 +729,13 @@ void MainWindow::closeEvent(QCloseEvent *event) {
             }
         }
     }
+
+    // --- NUEVO: Guardar configuración antes de salir ---
+    QSettings settings("AnabasaSoft", "CobolWorks");
+    settings.setValue("geometria", saveGeometry());
+    settings.setValue("estado_paneles", saveState());
+    settings.setValue("idioma_interfaz", rutaIdiomaActual);
+
     event->accept(); // Todo guardado o descartado, podemos salir
 }
 
@@ -969,10 +990,12 @@ void MainWindow::retraducirInterfaz() {
         }
     }
 
-    // Traducir Explorador
+    // Traducir todos los paneles laterales (Docks)
     QList<QDockWidget *> docks = findChildren<QDockWidget *>();
-    if (!docks.isEmpty()) {
-        docks.first()->setWindowTitle(tr("Explorador"));
+    if (docks.size() >= 3) {
+        docks[0]->setWindowTitle(tr("Explorador"));
+        docks[1]->setWindowTitle(tr("Estructura COBOL"));
+        docks[2]->setWindowTitle(tr("Flujo de Ejecución"));
     }
 
     // Traducir Barra de Estado
