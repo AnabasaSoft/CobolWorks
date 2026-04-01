@@ -1,0 +1,38 @@
+# --- Directorio de compilación ---
+# Ignoramos todo lo que ocurre dentro de /build
+build/
+
+# --- Archivos binarios y ejecutables ---
+# El programa compilado y archivos de objeto
+CobolWorks
+*.o
+*.a
+*.so
+
+# --- Archivos generados por Qt y CMake ---
+CMakeCache.txt
+CMakeFiles/
+CMakeLists.txt.user
+cmake_install.cmake
+Makefile
+*_autogen/
+mocs_compilation.cpp
+qrc_recursos.cpp
+
+# --- Traducciones compiladas ---
+# Guardamos los .ts (fuente), pero ignoramos los .qm (binarios)
+*.qm
+
+# --- Scripts de depuración locales ---
+# Estos los genera tu código al usar F8 y no deben subirse
+.gdbinit_cobolworks
+.lldbinit_cobolworks
+
+# --- Python ---
+__pycache__/
+*.pyc
+
+# --- Archivos temporales de editor (Kate/Linux) ---
+*~
+*.kate-swp
+.directory
