@@ -67,12 +67,14 @@ jobs:
           cmake -B build -G "MinGW Makefiles" -DCMAKE_BUILD_TYPE=Release
           cmake --build build --config Release
 
+
       - name: Compilar Traducciones
         shell: msys2 {0}
         run: |
           mkdir -p build/idiomas
           lrelease en_US.ts -qm build/idiomas/en_US.qm
           lrelease eu_ES.ts -qm build/idiomas/eu_ES.qm
+          lrelease eu_ES.ts -qm build/idiomas/fr_FR.qm
 
       - name: Empaquetar dependencias y aislar binarios
         shell: msys2 {0}
