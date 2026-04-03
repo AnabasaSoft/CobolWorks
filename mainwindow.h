@@ -116,7 +116,7 @@ private:
     bool eventFilter(QObject *watched, QEvent *event) override;
     void closeEvent(QCloseEvent *event) override;
     QNetworkAccessManager *managerActualizaciones;
-    const QString VERSION_ACTUAL = "1.0.0";
+    const QString VERSION_ACTUAL = "1.1.0";
     QTimer *timerLinter;
     QProcess *procesoLinter;
 };
