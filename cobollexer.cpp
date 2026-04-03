@@ -44,6 +44,11 @@ QColor CobolLexer::defaultPaper(int style) const {
     return QColor("#1E3E62"); // Fondo azul oscuro
 }
 
+const char *CobolLexer::wordCharacters() const {
+    // Le decimos al motor de autocompletado que el guion es parte de las palabras COBOL
+    return "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-";
+}
+
 QFont CobolLexer::defaultFont(int style) const {
     return QFont("Courier New", 12);
 }
@@ -83,8 +88,8 @@ void CobolLexer::styleText(int start, int end) {
         // 1. Números
         applyStyleLine(QRegularExpression("\\b\\d+(\\.\\d+)?\\b"), Number);
 
-        // 2. Palabras Clave
-        applyStyleLine(QRegularExpression("\\b(IDENTIFICATION|ENVIRONMENT|DATA|PROCEDURE|DIVISION|SECTION|PROGRAM-ID|WORKING-STORAGE|LINKAGE|FILE|PIC|PICTURE|DISPLAY|ACCEPT|STOP|RUN|PERFORM|COMPUTE|IF|ELSE|END-IF)\\b", QRegularExpression::CaseInsensitiveOption), Keyword);
+        // 2. Palabras Clave (Incluyendo CICS y DB2)
+        applyStyleLine(QRegularExpression("\\b(IDENTIFICATION|ENVIRONMENT|DATA|PROCEDURE|DIVISION|SECTION|PROGRAM-ID|WORKING-STORAGE|LINKAGE|FILE|PIC|PICTURE|DISPLAY|ACCEPT|STOP|RUN|PERFORM|COMPUTE|IF|ELSE|END-IF|EXEC|SQL|CICS|END-EXEC)\\b", QRegularExpression::CaseInsensitiveOption), Keyword);
 
         // 3. Cadenas ("..." o '...')
         applyStyleLine(QRegularExpression("(\"[^\"]*\"|'[^']*')"), String);

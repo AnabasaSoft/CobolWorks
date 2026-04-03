@@ -22,6 +22,8 @@
 #include <QLabel>
 #include <QTranslator>
 #include <QActionGroup>
+#include <QTimer>
+#include <QProcess>
 
 class MainWindow : public QMainWindow {
     Q_OBJECT
@@ -47,6 +49,7 @@ private slots:
     void toggleLineas();
     void toggleCursor();
     void irADefinicion();
+    void mostrarNavegadorFunciones();
     void mostrarMenuContextual(const QPoint &pos);
     void mostrarAyuda();
     void configurarAPI();
@@ -58,6 +61,15 @@ private slots:
     void depurarCodigo();
     void togglePuntoRuptura(int margin, int line, Qt::KeyboardModifiers state);
     void compilarSolo();
+    void configurarCompilador();
+    // Integraciones Enterprise
+    void integrarGitStatus();
+    void compilarEnDocker();
+    void generarPipelineCI();
+    void generarBoilerplateAPI();
+    // Soporte z/OS y Copybooks
+    void generarJCL();
+    void sincronizarCopybookRemoto();
     void abrirArchivoDesdeArbol(const QModelIndex &index);
     void cerrarPestana(int index);
     void marcarArchivoModificado(bool modificado);
@@ -66,10 +78,16 @@ private slots:
     void actualizarEsquema();
     void actualizarFlujo();
     void saltarAFlujo(class QTreeWidgetItem *item, int column);
+    void actualizarDependencias();
+    void abrirDependencia(class QTreeWidgetItem *item, int column);
     void saltarALineaEsquema(class QListWidgetItem *item);
     void saltarAErrorConsola();
     void comprobarActualizaciones();
     void procesarRespuestaActualizacion(QNetworkReply *reply);
+    void reiniciarTemporizadorLinter();
+    void ejecutarLinter();
+    void leerSalidaLinter();
+    void actualizarAutocompletado();
 
 private:
     QTabWidget *tabWidget;
@@ -79,8 +97,9 @@ private:
     QLabel *etiquetaPosicion;
     class QListWidget *listaEsquema; // Panel de estructura COBOL
     class QTreeWidget *arbolFlujo; // Panel de flujo de ejecución
+    class QTreeWidget *arbolDependencias; // Panel de dependencias externas
     bool lineasVisibles = true;
-    bool cursorBloque = false; // Por defecto lo dejamos en barra normal
+    bool cursorBloque = true; // Por defecto lo dejamos en bloque (toque clásico)
 
     // Variables de control de idioma (SOLO UNA VEZ)
     QString rutaIdiomaActual;
@@ -98,6 +117,8 @@ private:
     void closeEvent(QCloseEvent *event) override;
     QNetworkAccessManager *managerActualizaciones;
     const QString VERSION_ACTUAL = "1.0.0";
+    QTimer *timerLinter;
+    QProcess *procesoLinter;
 };
 
 #endif // MAINWINDOW_H

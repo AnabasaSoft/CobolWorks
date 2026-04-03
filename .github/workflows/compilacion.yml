@@ -26,9 +26,8 @@ jobs:
       - name: Compilar Traducciones
         run: |
           mkdir -p build/idiomas
-          /usr/lib/qt6/bin/lrelease en_US.ts -qm build/idiomas/en_US.qm
-          /usr/lib/qt6/bin/lrelease eu_ES.ts -qm build/idiomas/eu_ES.qm
-          /usr/lib/qt6/bin/lrelease eu_ES.ts -qm build/idiomas/fr_FR.qm
+          /usr/lib/qt6/bin/lrelease *.ts
+          mv *.qm build/idiomas/
 
       - name: Generar Paquetes (DEB, RPM, TGZ)
         working-directory: build
@@ -72,9 +71,8 @@ jobs:
         shell: msys2 {0}
         run: |
           mkdir -p build/idiomas
-          lrelease en_US.ts -qm build/idiomas/en_US.qm
-          lrelease eu_ES.ts -qm build/idiomas/eu_ES.qm
-          lrelease eu_ES.ts -qm build/idiomas/fr_FR.qm
+          lrelease *.ts
+          mv *.qm build/idiomas/
 
       - name: Empaquetar dependencias y aislar binarios
         shell: msys2 {0}

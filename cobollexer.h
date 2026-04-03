@@ -32,6 +32,7 @@ public:
     QColor defaultColor(int style) const override;
     QFont defaultFont(int style) const override;
     QColor defaultPaper(int style) const override;
+    const char *wordCharacters() const override;
 };
 
 #endif // COBOLLEXER_H

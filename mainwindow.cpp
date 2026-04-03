@@ -8,6 +8,7 @@
  *****************************************************************************/
 
 #include "mainwindow.h"
+#include "cobollexer.h"
 #include <QJsonDocument>
 #include <QJsonObject>
 #include <QDesktopServices>
@@ -17,7 +18,8 @@
 #include <QFont>
 #include <QKeyEvent>
 #include <QFileDialog>
-#include <QMessageBox>
+#include <QToolTip>
+#include <QHelpEvent>
 #include <QMenuBar>
 #include <QProcess>
 #include <QSplitter>
@@ -37,19 +39,16 @@
 #include <QHBoxLayout>
 #include <QFileInfo>
 #include <QDir>
-#include "cobollexer.h"
 #include <Qsci/qsciapis.h>
 #include <QStatusBar>
 #include <QLabel>
-#include <QDir>
 #include <QLocale>
 #include <QApplication>
 #include <QListWidget>
 #include <QRegularExpression>
-#include <QDialog>
-#include <QVBoxLayout>
 #include <QTreeWidget>
 #include <QTreeWidgetItem>
+#include <QProcessEnvironment>
 
 MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // Inicializamos el sistema de traducción
@@ -74,10 +73,20 @@ MainWindow::MainWindow(QWidget *parent) : QMainWindow(parent) {
     // --- NUEVO: Restaurar tamaño de ventana y posición de los paneles ---
     restoreGeometry(settings.value("geometria").toByteArray());
     restoreState(settings.value("estado_paneles").toByteArray());
+    // Restaurar estado del cursor (si no existe, usa el true por defecto)
+    cursorBloque = settings.value("cursor_bloque", true).toBool();
 
     // Comprobador silencioso de actualizaciones al arrancar
     managerActualizaciones = new QNetworkAccessManager(this);
     connect(managerActualizaciones, &QNetworkAccessManager::finished, this, &MainWindow::procesarRespuestaActualizacion);
+    // Motor del Linter en tiempo real
+    timerLinter = new QTimer(this);
+    timerLinter->setSingleShot(true);
+    timerLinter->setInterval(1000); // Espera 1 segundo de inactividad
+    connect(timerLinter, &QTimer::timeout, this, &MainWindow::ejecutarLinter);
+
+    procesoLinter = new QProcess(this);
+    connect(procesoLinter, &QProcess::finished, this, &MainWindow::leerSalidaLinter);
     comprobarActualizaciones();
 
     nuevoArchivo();
@@ -109,6 +118,23 @@ void MainWindow::crearInterfaz() {
 
     dock->setWidget(arbolArchivos);
     addDockWidget(Qt::LeftDockWidgetArea, dock);
+    // --- Panel Izquierdo: Mapa de Dependencias ---
+    QDockWidget *dockDependencias = new QDockWidget(tr("Dependencias"), this);
+    dockDependencias->setObjectName("panelDependencias");
+    dockDependencias->setAllowedAreas(Qt::LeftDockWidgetArea | Qt::RightDockWidgetArea);
+    dockDependencias->setStyleSheet("QDockWidget { color: #E2F1E7; } QDockWidget::title { background: #1E3E62; padding-left: 5px; }");
+
+    arbolDependencias = new QTreeWidget(dockDependencias);
+    arbolDependencias->setHeaderHidden(true);
+    arbolDependencias->setStyleSheet("QTreeWidget { background-color: #0B192C; color: #E2F1E7; border: none; outline: none; } QTreeWidget::item { padding: 4px; } QTreeWidget::item:selected { background-color: #478CCF; color: white; font-weight: bold; }");
+
+    dockDependencias->setWidget(arbolDependencias);
+    addDockWidget(Qt::LeftDockWidgetArea, dockDependencias);
+
+    // Apilamos el explorador y las dependencias (se crearán pestañas abajo)
+    tabifyDockWidget(dock, dockDependencias);
+
+    connect(arbolDependencias, &QTreeWidget::itemDoubleClicked, this, &MainWindow::abrirDependencia);
 
     // --- Panel Derecho: Estructura COBOL ---
     QDockWidget *dockEsquema = new QDockWidget(tr("Estructura COBOL"), this);
@@ -148,19 +174,36 @@ void MainWindow::crearInterfaz() {
 
     tabWidget = new QTabWidget(splitter);
     connect(tabWidget, &QTabWidget::currentChanged, this, &MainWindow::actualizarEsquema);
+    connect(tabWidget, &QTabWidget::currentChanged, this, &MainWindow::actualizarDependencias);
     tabWidget->setTabsClosable(true);
     tabWidget->setStyleSheet("QTabBar::tab { background: #1E3E62; color: #E2F1E7; padding: 8px; } QTabBar::tab:selected { background: #0B192C; font-weight: bold; } QTabWidget::pane { border: 1px solid #1E3E62; }");
     connect(tabWidget, &QTabWidget::tabCloseRequested, this, &MainWindow::cerrarPestana);
 
-    consola = new QTextEdit(splitter);
+    // Contenedor para agrupar el botón y la consola
+    QWidget *contenedorConsola = new QWidget(splitter);
+    QVBoxLayout *layoutConsola = new QVBoxLayout(contenedorConsola);
+    layoutConsola->setContentsMargins(0, 0, 0, 0);
+    layoutConsola->setSpacing(0);
+
+    // Botón de limpiar
+    QPushButton *btnLimpiarConsola = new QPushButton(tr("🧹 Limpiar Consola"), contenedorConsola);
+    btnLimpiarConsola->setStyleSheet("QPushButton { background-color: #1E3E62; color: #A6E3E9; border: none; padding: 4px 10px; text-align: left; font-weight: bold; } QPushButton:hover { background-color: #2A4D77; }");
+
+    consola = new QTextEdit(contenedorConsola);
     consola->setReadOnly(true);
     consola->setStyleSheet("background-color: #040D1A; color: #A6E3E9; font-family: 'Courier New'; font-size: 11pt; border: none;");
 
-    // NUEVO: Le decimos al panel interno de la consola que nos mande sus eventos (clics, teclas...)
+    // Le decimos al panel interno de la consola que nos mande sus eventos (clics, teclas...)
     consola->viewport()->installEventFilter(this);
 
+    // Conectamos el botón directamente a la función de borrado nativa
+    connect(btnLimpiarConsola, &QPushButton::clicked, consola, &QTextEdit::clear);
+
+    layoutConsola->addWidget(btnLimpiarConsola);
+    layoutConsola->addWidget(consola);
+
     splitter->addWidget(tabWidget);
-    splitter->addWidget(consola);
+    splitter->addWidget(contenedorConsola);
     splitter->setStretchFactor(0, 4);
     splitter->setStretchFactor(1, 1);
 
@@ -174,6 +217,7 @@ void MainWindow::crearInterfaz() {
 }
 
 void MainWindow::configurarEditor(QsciScintilla *editor) {
+    editor->setUtf8(true);
     QFont fuente("Courier New", 12);
     editor->setFont(fuente);
     editor->setMarginsFont(fuente);
@@ -206,6 +250,10 @@ void MainWindow::configurarEditor(QsciScintilla *editor) {
     editor->setCaretLineVisible(true);
     editor->setCaretLineBackgroundColor(QColor("#2A4D77"));
 
+    // --- NUEVO: Indicador 0 para el Linter (Subrayado rojo ondulado) ---
+    editor->SendScintilla(QsciScintilla::SCI_INDICSETSTYLE, 0, QsciScintilla::INDIC_SQUIGGLE);
+    editor->SendScintilla(QsciScintilla::SCI_INDICSETFORE, 0, QColor("#E06C75"));
+
     // --- NUEVO: Enseñar a Scintilla a leer COBOL ---
     // Le decimos que el guion '-' es una letra válida para formar palabras
     editor->SendScintilla(QsciScintilla::SCI_SETWORDCHARS, (uintptr_t)0, "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-");
@@ -237,7 +285,8 @@ void MainWindow::configurarEditor(QsciScintilla *editor) {
     QStringList palabrasClave = {
         "IDENTIFICATION", "ENVIRONMENT", "DATA", "PROCEDURE", "DIVISION", "SECTION",
         "PROGRAM-ID", "WORKING-STORAGE", "LINKAGE", "FILE", "PIC", "PICTURE",
-        "DISPLAY", "ACCEPT", "STOP", "RUN", "PERFORM", "COMPUTE", "IF", "ELSE", "END-IF"
+        "DISPLAY", "ACCEPT", "STOP", "RUN", "PERFORM", "COMPUTE", "IF", "ELSE", "END-IF",
+        "EXEC", "SQL", "CICS", "END-EXEC"
     };
     for (const QString &palabra : palabrasClave) {
         api->add(palabra);
@@ -251,6 +300,8 @@ void MainWindow::configurarEditor(QsciScintilla *editor) {
     // Conectamos el clic en el margen a nuestra función
     connect(editor, &QsciScintilla::marginClicked, this, &MainWindow::togglePuntoRuptura);
     editor->installEventFilter(this);
+    // Aseguramos que también interceptamos los eventos del ratón en la zona de texto puro
+    editor->viewport()->installEventFilter(this);
 }
 
 QsciScintilla* MainWindow::editorActual() {
@@ -283,6 +334,8 @@ void MainWindow::crearNuevaPestana(const QString &nombre, const QString &ruta, c
     connect(nuevoEditor, &QsciScintilla::cursorPositionChanged, this, &MainWindow::actualizarStatusBar);
     connect(nuevoEditor, &QsciScintilla::textChanged, this, &MainWindow::actualizarEsquema);
     connect(nuevoEditor, &QsciScintilla::textChanged, this, &MainWindow::actualizarFlujo);
+    connect(nuevoEditor, &QsciScintilla::textChanged, this, &MainWindow::actualizarDependencias);
+    connect(nuevoEditor, &QsciScintilla::textChanged, this, &MainWindow::reiniciarTemporizadorLinter);
 
     // --- NUEVO: Menú contextual (clic derecho) ---
     nuevoEditor->setContextMenuPolicy(Qt::CustomContextMenu);
@@ -290,6 +343,8 @@ void MainWindow::crearNuevaPestana(const QString &nombre, const QString &ruta, c
 
     actualizarEsquema();
     actualizarFlujo();
+    actualizarDependencias();
+    actualizarAutocompletado();
 }
 
 void MainWindow::cerrarPestana(int index) {
@@ -367,8 +422,16 @@ void MainWindow::crearMenus() {
     menuEdicion->addAction(tr("Sustituir ..."), QKeySequence::Replace, this, &MainWindow::sustituirTexto);
     menuEdicion->addSeparator();
     QAction *accionDefinicion = menuEdicion->addAction(tr("Ir a la definición"), this, &MainWindow::irADefinicion);
+    QAction *accionAutocompletar = menuEdicion->addAction(tr("Forzar Autocompletado"), this, [this](){
+        if (QsciScintilla *ed = editorActual()) ed->autoCompleteFromAll();
+    });
+        accionAutocompletar->setShortcut(QKeySequence("Ctrl+Space"));
+        addAction(accionAutocompletar);
     accionDefinicion->setShortcut(QKeySequence(Qt::Key_F2));
     addAction(accionDefinicion); // Para que funcione F2 globalmente
+    QAction *accionNavegador = menuEdicion->addAction(tr("Navegador de Funciones"), this, &MainWindow::mostrarNavegadorFunciones);
+    accionNavegador->setShortcut(QKeySequence("Ctrl+P"));
+    addAction(accionNavegador); // Globalizamos el atajo
 
     QMenu *menuVista = menuBar()->addMenu(tr("&Vista"));
     QAction *accionLineas = menuVista->addAction(tr("Mostrar líneas guía (Col 8 y 12)"), this, &MainWindow::toggleLineas);
@@ -394,6 +457,17 @@ void MainWindow::crearMenus() {
     accionAntTab->setShortcutContext(Qt::ApplicationShortcut);
     connect(accionAntTab, &QAction::triggered, this, &MainWindow::anteriorPestana);
 
+    // --- MENÚ EMPRESA (DevOps & APIs) ---
+    QMenu *menuEmpresa = menuBar()->addMenu(tr("E&mpresa"));
+    menuEmpresa->addAction(tr("Git: Comprobar Estado (Status)"), this, &MainWindow::integrarGitStatus);
+    menuEmpresa->addAction(tr("Generar Pipeline CI/CD (GitHub Actions)"), this, &MainWindow::generarPipelineCI);
+    menuEmpresa->addAction(tr("Generar Cliente API REST (Boilerplate)"), this, &MainWindow::generarBoilerplateAPI);
+    menuEmpresa->addSeparator();
+
+    QMenu *menuZOS = menuEmpresa->addMenu(tr("Mainframe / zOS"));
+    menuZOS->addAction(tr("Descargar Copybook Remoto..."), this, &MainWindow::sincronizarCopybookRemoto);
+    menuZOS->addAction(tr("Generar Job JCL (Simulación)"), this, &MainWindow::generarJCL);
+
     QMenu *menuConstruir = menuBar()->addMenu(tr("&Construir"));
     QAction *accionCompilarSolo = menuConstruir->addAction(tr("Compilar"), this, &MainWindow::compilarSolo);
     accionCompilarSolo->setShortcut(QKeySequence(Qt::Key_F6));
@@ -404,6 +478,11 @@ void MainWindow::crearMenus() {
     QAction *accionDepurar = menuConstruir->addAction(tr("Depurar con GDB"), this, &MainWindow::depurarCodigo);
     accionDepurar->setShortcut(QKeySequence(Qt::Key_F8));
     addAction(accionDepurar); // Para que funcione F8 globalmente
+    QAction *accionDocker = menuConstruir->addAction(tr("Compilar en contenedor Docker"), this, &MainWindow::compilarEnDocker);
+
+    menuConstruir->addSeparator();
+    QAction *accionConfigurar = menuConstruir->addAction(tr("Configuración del Compilador..."), this, &MainWindow::configurarCompilador);
+    addAction(accionConfigurar);
 
     // Registro de acciones en la ventana
     addAction(accionNuevo);
@@ -426,6 +505,7 @@ void MainWindow::crearMenus() {
     // Usamos funciones lambda [this]() para pasarle el idioma como parámetro al momento de hacer clic
     menuIA->addAction(tr("Traducir COBOL a Python"), this, [this](){ traducirCodigoIA("Python"); });
     menuIA->addAction(tr("Traducir COBOL a Java"), this, [this](){ traducirCodigoIA("Java"); });
+    menuIA->addAction(tr("Explicar código COBOL"), this, [this](){ traducirCodigoIA("Explicación"); });
 
     // --- Menú Ayuda ---
     QMenu *menuAyuda = menuBar()->addMenu(tr("A&yuda"));
@@ -461,6 +541,49 @@ bool MainWindow::eventFilter(QObject *watched, QEvent *event) {
 
             editor->insert(QString(espacios_a_insertar, ' '));
             editor->setCursorPosition(linea, columna + espacios_a_insertar);
+            return true;
+        }
+    }
+    // 3. Detectar Tooltip (Ratón quieto sobre una variable)
+    if (event->type() == QEvent::ToolTip) {
+        QHelpEvent *helpEvent = static_cast<QHelpEvent *>(event);
+
+        // El evento puede venir del editor o de su capa gráfica (viewport)
+        QsciScintilla *editorHover = qobject_cast<QsciScintilla*>(watched);
+        if (!editorHover) editorHover = qobject_cast<QsciScintilla*>(watched->parent());
+
+        if (editorHover) {
+            // SCI_POSITIONFROMPOINTCLOSE devuelve la posición o -1 si el ratón está en un hueco vacío
+            int pos = editorHover->SendScintilla(QsciScintilla::SCI_POSITIONFROMPOINTCLOSE, helpEvent->pos().x(), helpEvent->pos().y());
+            if (pos != -1) {
+                int linea, columna;
+                editorHover->lineIndexFromPosition(pos, &linea, &columna);
+
+                // QScintilla nos da la palabra entera automáticamente (con guiones incluidos)
+                QString palabra = editorHover->wordAtLineIndex(linea, columna);
+
+                if (!palabra.isEmpty() && palabra.length() > 2) {
+                    QString textoDoc = editorHover->text();
+                    QStringList lineas = textoDoc.split('\n');
+
+                    // Buscamos si es una variable definida en la Data Division
+                    QRegularExpression reVariable("^(0[1-9]|[1-4][0-9]|77|88|FD|SD)\\s+" + QRegularExpression::escape(palabra) + "(?:\\s|\\.|$)");
+
+                    for (const QString &l : lineas) {
+                        QString lineaLimpia = l.trimmed();
+                        if (lineaLimpia.startsWith("*") || lineaLimpia.startsWith("*>")) continue;
+
+                        if (reVariable.match(lineaLimpia).hasMatch()) {
+                            // Encontramos la definición: pintamos el globo emergente
+                            QString globo = "<b>" + palabra + "</b><hr>" + lineaLimpia;
+                            QToolTip::showText(helpEvent->globalPos(), globo, editorHover);
+                            return true;
+                        }
+                    }
+                }
+            }
+            // Si el ratón está en un sitio vacío o no es variable, ocultamos cualquier globo
+            QToolTip::hideText();
             return true;
         }
     }
@@ -550,6 +673,8 @@ void MainWindow::guardarArchivo() {
             out << editor->text();
             file.close();
             editor->setModified(false); // Le decimos al motor que ya no hay cambios pendientes
+
+            actualizarAutocompletado();
         }
     }
 }
@@ -571,6 +696,8 @@ void MainWindow::guardarComo() {
             int index = tabWidget->currentIndex();
             tabWidget->setTabText(index, QFileInfo(ruta).fileName());
             tabWidget->setTabToolTip(index, ruta);
+
+            actualizarAutocompletado();
         }
     }
 }
@@ -745,6 +872,7 @@ void MainWindow::closeEvent(QCloseEvent *event) {
     settings.setValue("geometria", saveGeometry());
     settings.setValue("estado_paneles", saveState());
     settings.setValue("idioma_interfaz", rutaIdiomaActual);
+    settings.setValue("cursor_bloque", cursorBloque);
 
     event->accept(); // Todo guardado o descartado, podemos salir
 }
@@ -766,7 +894,35 @@ void MainWindow::compilarSolo() {
 
     QProcess compilador;
     compilador.setWorkingDirectory(directorio);
-    compilador.start("cobc", QStringList() << "-x" << ruta << "-o" << rutaEjecutable);
+
+    QSettings settings("AnabasaSoft", "CobolWorks");
+    QString customFlags = settings.value("compilador_flags", "").toString();
+    QString customEnv = settings.value("compilador_entorno", "").toString();
+
+    // Inyectar entorno
+    if (!customEnv.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        QStringList variables = customEnv.split(';');
+        for (const QString &var : variables) {
+            QStringList partes = var.split('=');
+            if (partes.length() == 2) {
+                env.insert(partes[0].trimmed(), partes[1].trimmed());
+            }
+        }
+        compilador.setProcessEnvironment(env);
+    } else {
+        compilador.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    }
+
+    // Inyectar argumentos
+    QStringList argumentos;
+    argumentos << "-x";
+    if (!customFlags.isEmpty()) {
+        argumentos << customFlags.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    }
+    argumentos << ruta << "-o" << rutaEjecutable;
+
+    compilador.start("cobc", argumentos);
     compilador.waitForFinished();
 
     QString errores = compilador.readAllStandardError();
@@ -818,7 +974,35 @@ void MainWindow::compilarEjecutar() {
 
     QProcess compilador;
     compilador.setWorkingDirectory(directorio);
-    compilador.start("cobc", QStringList() << "-x" << ruta << "-o" << rutaEjecutable);
+
+    QSettings settings("AnabasaSoft", "CobolWorks");
+    QString customFlags = settings.value("compilador_flags", "").toString();
+    QString customEnv = settings.value("compilador_entorno", "").toString();
+
+    // Inyectar entorno
+    if (!customEnv.isEmpty()) {
+        QProcessEnvironment env = QProcessEnvironment::systemEnvironment();
+        QStringList variables = customEnv.split(';');
+        for (const QString &var : variables) {
+            QStringList partes = var.split('=');
+            if (partes.length() == 2) {
+                env.insert(partes[0].trimmed(), partes[1].trimmed());
+            }
+        }
+        compilador.setProcessEnvironment(env);
+    } else {
+        compilador.setProcessEnvironment(QProcessEnvironment::systemEnvironment());
+    }
+
+    // Inyectar argumentos
+    QStringList argumentos;
+    argumentos << "-x";
+    if (!customFlags.isEmpty()) {
+        argumentos << customFlags.split(QRegularExpression("\\s+"), Qt::SkipEmptyParts);
+    }
+    argumentos << ruta << "-o" << rutaEjecutable;
+
+    compilador.start("cobc", argumentos);
     compilador.waitForFinished();
 
     QString errores = compilador.readAllStandardError();
@@ -1000,13 +1184,11 @@ void MainWindow::retraducirInterfaz() {
         }
     }
 
-    // Traducir todos los paneles laterales (Docks)
-    QList<QDockWidget *> docks = findChildren<QDockWidget *>();
-    if (docks.size() >= 3) {
-        docks[0]->setWindowTitle(tr("Explorador"));
-        docks[1]->setWindowTitle(tr("Estructura COBOL"));
-        docks[2]->setWindowTitle(tr("Flujo de Ejecución"));
-    }
+    // Traducir todos los paneles laterales (Docks) buscando por su nombre interno
+    if (QDockWidget *d = findChild<QDockWidget*>("panelExplorador")) d->setWindowTitle(tr("Explorador"));
+    if (QDockWidget *d = findChild<QDockWidget*>("panelDependencias")) d->setWindowTitle(tr("Dependencias"));
+    if (QDockWidget *d = findChild<QDockWidget*>("panelEsquema")) d->setWindowTitle(tr("Estructura COBOL"));
+    if (QDockWidget *d = findChild<QDockWidget*>("panelFlujo")) d->setWindowTitle(tr("Flujo de Ejecución"));
 
     // Traducir Barra de Estado
     if (QsciScintilla *ed = editorActual()) {
@@ -1062,8 +1244,12 @@ void MainWindow::actualizarEsquema() {
         bool esDivision = linea.contains("DIVISION");
         bool esSeccion = linea.contains("SECTION");
         bool esParrafo = linea.endsWith(".") && !linea.contains(" ") && linea.length() > 2;
+        // NUEVO: Detectar variables (niveles 01-49, 77, 88 o FD/SD)
+        QRegularExpression reVariable("^(0[1-9]|[1-4][0-9]|77|88|FD|SD)\\s+([a-zA-Z0-9\\-]+)");
+        QRegularExpressionMatch matchVar = reVariable.match(linea);
+        bool esVariable = matchVar.hasMatch();
 
-        if (esDivision || esSeccion || esParrafo) {
+        if (esDivision || esSeccion || esParrafo || esVariable) {
             // Limpiamos el texto para que se vea bonito en la lista
             QString textoMostrar = linea;
             textoMostrar.remove("."); // Quitamos el punto final
@@ -1083,6 +1269,9 @@ void MainWindow::actualizarEsquema() {
             } else if (esParrafo) {
                 item->setForeground(QColor("#98C379"));
                 item->setText("    " + textoMostrar); // Doble sangría
+            } else if (esVariable) {
+                item->setForeground(QColor("#D19A66")); // Naranja
+                item->setText("      " + matchVar.captured(1) + " " + matchVar.captured(2)); // Triple sangría
             }
         }
     }
@@ -1254,10 +1443,10 @@ void MainWindow::irADefinicion() {
 }
 
 void MainWindow::mostrarAyuda() {
-    // Creamos la ventana emergente
+    // Creamos la ventana emergente principal
     QDialog *dialogo = new QDialog(this);
     dialogo->setWindowTitle(tr("Ayuda de CobolWorks"));
-    dialogo->resize(650, 550);
+    dialogo->resize(750, 550);
     dialogo->setStyleSheet("background-color: #0B192C; color: #E2F1E7;");
 
     QVBoxLayout *layout = new QVBoxLayout(dialogo);
@@ -1265,61 +1454,119 @@ void MainWindow::mostrarAyuda() {
     // 1. Añadimos el Logo centrado en la parte superior
     QLabel *labelLogo = new QLabel(dialogo);
     QPixmap pixmap(":/logo.png");
-    labelLogo->setPixmap(pixmap.scaledToWidth(400, Qt::SmoothTransformation));
+    labelLogo->setPixmap(pixmap.scaledToWidth(350, Qt::SmoothTransformation));
     labelLogo->setAlignment(Qt::AlignCenter);
     layout->addWidget(labelLogo);
 
-    // 2. Añadimos el área de texto con scroll
-    QTextBrowser *textoAyuda = new QTextBrowser(dialogo);
-    textoAyuda->setReadOnly(true);
-    textoAyuda->setOpenExternalLinks(true); // Permitir que los clics abran el navegador web
-    textoAyuda->setStyleSheet("background-color: #1E3E62; color: #E2F1E7; font-size: 11pt; border: 1px solid #478CCF; padding: 10px;");
+    // 2. Creamos el sistema de pestañas
+    QTabWidget *pestanas = new QTabWidget(dialogo);
+    pestanas->setStyleSheet(
+        "QTabBar::tab { background: #1E3E62; color: #E2F1E7; padding: 8px 20px; border-top-left-radius: 4px; border-top-right-radius: 4px; margin-right: 2px; }"
+        "QTabBar::tab:selected { background: #478CCF; font-weight: bold; }"
+        "QTabWidget::pane { border: 1px solid #478CCF; background-color: #1E3E62; }"
+    );
 
-    // Redactamos el manual usando HTML para que quede bonito
-    QString contenido = tr(
-        "<h1>CobolWorks</h1>"
+    // --- PESTAÑA 1: ATAJOS DE TECLADO ---
+    QTextBrowser *tabAtajos = new QTextBrowser(pestanas);
+    tabAtajos->setStyleSheet("background-color: transparent; color: #E2F1E7; font-size: 11pt; border: none; padding: 15px;");
+    tabAtajos->setHtml(tr(
+        "<h2>Edición y Navegación</h2>"
+        "<ul>"
+        "<li><b>Ctrl + P:</b> Navegador de Funciones. Filtra y salta rápido a cualquier párrafo o variable del código.</li>"
+        "<li><b>F2:</b> Ir a la definición. Pon el cursor sobre una variable, párrafo o COPYBOOK y pulsa F2 para saltar a su origen.</li>"
+        "<li><b>Ctrl + Espacio:</b> Fuerza el menú de autocompletado (incluye variables de COPYBOOKs externos).</li>"
+        "<li><b>Tabulador:</b> Si estás al principio de la línea, salta automáticamente a la Columna 7 o Columna 11 (Área A y B).</li>"
+        "<li><b>Ctrl + F:</b> Buscar texto en el archivo actual.</li>"
+        "<li><b>Ctrl + H / Ctrl + R:</b> Abrir panel avanzado de Buscar y Sustituir.</li>"
+        "</ul>"
+        "<h2>Archivos y Vista</h2>"
+        "<ul>"
+        "<li><b>Ctrl + N / O / S:</b> Nuevo, Abrir y Guardar archivo.</li>"
+        "<li><b>Ctrl + W:</b> Cerrar la pestaña actual.</li>"
+        "<li><b>Ctrl + Tab:</b> Cambiar a la siguiente pestaña abierta.</li>"
+        "<li><b>Ctrl + Shift + Tab:</b> Cambiar a la pestaña anterior.</li>"
+        "<li><b>Ctrl + 0:</b> Restaurar el tamaño de la fuente por defecto.</li>"
+        "</ul>"
+        "<h2>Construcción y Depuración</h2>"
+        "<ul>"
+        "<li><b>F5:</b> Compilar y ejecutar el programa en una terminal externa.</li>"
+        "<li><b>F6:</b> Compilar solo para comprobar errores en la consola inferior.</li>"
+        "<li><b>F8:</b> Lanzar el depurador visual (GDB/LLDB) respetando tus puntos de ruptura.</li>"
+        "</ul>"
+    ));
+
+    // --- PESTAÑA 2: CARACTERÍSTICAS DEL IDE ---
+    QTextBrowser *tabCaracteristicas = new QTextBrowser(pestanas);
+    tabCaracteristicas->setStyleSheet("background-color: transparent; color: #E2F1E7; font-size: 11pt; border: none; padding: 15px;");
+    tabCaracteristicas->setHtml(tr(
+        "<h2>Potenciando el código Legacy</h2>"
+        "<ul>"
+        "<li><b>Linter silencioso:</b> Deja de escribir 1 segundo y CobolWorks subrayará en rojo los errores de sintaxis en tiempo real.</li>"
+        "<li><b>Inspección de variables (Hover):</b> Deja el ratón quieto sobre una variable para ver su PIC y línea de definición en un globo flotante.</li>"
+        "<li><b>Terminal Click-to-Error:</b> Haz doble clic sobre cualquier mensaje de error rojo en la consola inferior para saltar exactamente a esa línea en el editor.</li>"
+        "<li><b>Paneles Dinámicos:</b> "
+        "   <ul>"
+        "   <li><b>Estructura COBOL:</b> Lista jerárquica de tus Divisiones, Secciones, Párrafos y Variables.</li>"
+        "   <li><b>Flujo de Ejecución:</b> Árbol visual de tus saltos PERFORM y GO TO.</li>"
+        "   <li><b>Dependencias:</b> Archivos COPYBOOK y programas externos (CALL) detectados.</li>"
+        "   </ul>"
+        "</li>"
+        "<li><b>Formateo estricto:</b> Líneas de guía visuales para respetar las reglas del estándar COBOL.</li>"
+        "<li><b>Puntos de ruptura (Breakpoints):</b> Haz clic en el margen izquierdo de cualquier línea para añadir un punto de interrupción antes de pulsar F8.</li>"
+        "</ul>"
+    ));
+
+    // --- PESTAÑA 3: I.A. Y EMPRESA ---
+    QTextBrowser *tabEnterprise = new QTextBrowser(pestanas);
+    tabEnterprise->setStyleSheet("background-color: transparent; color: #E2F1E7; font-size: 11pt; border: none; padding: 15px;");
+    tabEnterprise->setHtml(tr(
+        "<h2>Inteligencia Artificial (Gemini)</h2>"
+        "<p>Selecciona un fragmento de código (o nada, para el archivo entero) y usa el menú <b>I.A.</b>:</p>"
+        "<ul>"
+        "<li><b>Traducción:</b> Convierte código COBOL a Python o Java modernos de forma automática.</li>"
+        "<li><b>Explicación:</b> Pídele a la IA que desglose la lógica compleja de un párrafo en lenguaje natural.</li>"
+        "</ul>"
+        "<h2>Integraciones Enterprise (Menú Empresa)</h2>"
+        "<ul>"
+        "<li><b>Git (Status):</b> Comprueba si tienes archivos modificados sin salir del editor.</li>"
+        "<li><b>Docker:</b> Compila en un contenedor oficial (ghcr.io/gnu-cobol) garantizando compatibilidad total en producción.</li>"
+        "<li><b>CI/CD:</b> Genera en un clic el YAML de GitHub Actions para probar el código en la nube en cada commit.</li>"
+        "<li><b>Boilerplate APIs:</b> Genera plantillas base para consumir APIs REST utilizando llamadas al sistema.</li>"
+        "</ul>"
+        "<h2>Mainframe y zOS</h2>"
+        "<ul>"
+        "<li><b>Soporte DB2 y CICS:</b> El editor reconoce nativamente las sentencias <code>EXEC SQL</code> y <code>EXEC CICS</code>, aplicando el resaltado de sintaxis correcto.</li>"
+        "<li><b>Copybooks Remotos:</b> Descarga archivos .cpy directamente desde una URL (ej. repositorio de GitHub o servidor interno). El IDE los guarda en caché local y configura el compilador automáticamente para usarlos al instante sin rutas absolutas en tu código.</li>"
+        "<li><b>Simulador JCL y z/OS:</b> Genera un script de Job Control Language (JCL) de IBM y ajusta en segundo plano GnuCOBOL al estándar estricto (<code>-std=ibm-strict</code>) para emular el comportamiento exacto del Mainframe.</li>"
+        "</ul>"
+    ));
+
+    // --- PESTAÑA 4: ACERCA DE ---
+    QTextBrowser *tabAcerca = new QTextBrowser(pestanas);
+    tabAcerca->setStyleSheet("background-color: transparent; color: #E2F1E7; font-size: 11pt; border: none; padding: 15px;");
+    tabAcerca->setOpenExternalLinks(true);
+    tabAcerca->setHtml(tr(
+        "<h2>CobolWorks</h2>"
         "<p><b>El IDE moderno para el programador de siempre.</b></p>"
-        "<p>CobolWorks es un entorno de desarrollo integrado (IDE) ligero y potente, diseñado específicamente para facilitar la escritura, compilación y depuración de código COBOL. Cuenta con un sistema avanzado de análisis de código, estructura interactiva y utilidades diseñadas para la máxima productividad.</p>"
-
-        "<h2>Atajos de Teclado Principales</h2>"
-        "<ul>"
-        "<li><b>Ctrl + N:</b> Nuevo archivo vacío</li>"
-        "<li><b>Ctrl + O:</b> Abrir archivo</li>"
-        "<li><b>Ctrl + S:</b> Guardar archivo actual</li>"
-        "<li><b>Ctrl + W:</b> Cerrar la pestaña actual</li>"
-        "<li><b>Ctrl + Tab:</b> Ir a la pestaña siguiente</li>"
-        "<li><b>Ctrl + Shift + Tab:</b> Ir a la pestaña anterior</li>"
-        "<li><b>F2:</b> Ir a la definición (variables, párrafos, o abrir COPYBOOKs)</li>"
-        "<li><b>F5:</b> Compilar y ejecutar en terminal</li>"
-        "<li><b>F6:</b> Compilar y mostrar errores</li>"
-        "<li><b>Ctrl + 0:</b> Restaurar el tamaño de la letra (Zoom)</li>"
-        "<li><b>Ctrl + F:</b> Buscar en el código</li>"
-        "<li><b>Ctrl + H / Ctrl + R:</b> Buscar y Sustituir texto avanzado</li>"
-        "</ul>"
-
-        "<h2>Características Destacadas</h2>"
-        "<ul>"
-        "<li><b>Terminal Interactiva:</b> Haz doble clic sobre cualquier error rojo en la consola inferior para saltar a la línea afectada.</li>"
-        "<li><b>Navegador de Estructura y Flujo:</b> Panel lateral con el esquema y el árbol de ejecución (PERFORM/GO TO). Haz doble clic en cualquier elemento para navegar rápido.</li>"
-        "<li><b>Navegación COPYBOOK (F2):</b> Pon el cursor sobre un <code>COPY \"ARCHIVO.CPY\"</code> y pulsa F2 para abrirlo en una pestaña nueva automáticamente.</li>"
-        "<li><b>Migración con IA (Gemini):</b> Traduce bloques de código o archivos enteros a Python y Java modernos configurando tu API Key desde el menú.</li>"
-        "<li><b>Formateo COBOL Estricto:</b> Líneas guía visuales en las columnas 7, 11 y 72. El tabulador respeta las áreas A y B.</li>"
-        "<li><b>Traducción Dinámica:</b> Cambia el idioma de la interfaz al vuelo sin reiniciar.</li>"
-        "</ul>"
-
-        "<h2>Contacto y Enlaces</h2>"
+        "<p>Desarrollado para romper la barrera entre el mundo Mainframe y las filosofías ágiles de desarrollo actual. Diseñado con cariño para entornos Linux.</p>"
+        "<br>"
+        "<h2>Contacto y Soporte</h2>"
         "<ul>"
         "<li><b>Email:</b> <a href=\"mailto:anabasasoft@gmail.com\" style=\"color: #A6E3E9;\">anabasasoft@gmail.com</a></li>"
         "<li><b>Web:</b> <a href=\"https://anabasasoft.github.io\" style=\"color: #A6E3E9;\">anabasasoft.github.io</a></li>"
         "<li><b>GitHub:</b> <a href=\"https://github.com/anabasasoft\" style=\"color: #A6E3E9;\">github.com/anabasasoft</a></li>"
         "</ul>"
-
         "<hr>"
         "<p><i>Desarrollado con Qt6 y C++ en Manjaro Linux. &copy; AnabasaSoft</i></p>"
-    );
+    ));
 
-    textoAyuda->setHtml(contenido);
-    layout->addWidget(textoAyuda);
+    // Ensamblamos las pestañas
+    pestanas->addTab(tabAtajos, tr("Teclado"));
+    pestanas->addTab(tabCaracteristicas, tr("Características"));
+    pestanas->addTab(tabEnterprise, tr("IA & Empresa"));
+    pestanas->addTab(tabAcerca, tr("Acerca de"));
+
+    layout->addWidget(pestanas);
 
     // Mostramos la ventana
     dialogo->exec();
@@ -1496,7 +1743,12 @@ void MainWindow::traducirCodigoIA(const QString &lenguaje) {
             QString resultado = QString::fromUtf8(fileOut.readAll());
 
             // 1. Creamos la pestaña COMPLETAMENTE VACÍA para fijar el punto de guardado en blanco
-            crearNuevaPestana(tr("Migración %1").arg(lenguaje), "", "");
+            QString tituloPestana = (lenguaje == "Explicación") ? tr("Explicación IA") : tr("Migración %1").arg(lenguaje);
+            crearNuevaPestana(tituloPestana, "", "");
+            // Activamos el ajuste de línea (Word Wrap) para leer la explicación como un documento
+            if (lenguaje == "Explicación" && editorActual()) {
+                editorActual()->setWrapMode(QsciScintilla::WrapWord);
+            }
 
             // 2. Ahora "escribimos" el resultado. Scintilla lo detectará como un cambio brutal del usuario
             if (QsciScintilla *nuevoEditor = editorActual()) {
@@ -1660,4 +1912,605 @@ void MainWindow::procesarRespuestaActualizacion(QNetworkReply *reply) {
         }
     }
     reply->deleteLater();
+}
+
+void MainWindow::reiniciarTemporizadorLinter() {
+    // Si el usuario vuelve a escribir, borramos los subrayados rojos para que no molesten
+    if (QsciScintilla *editor = editorActual()) {
+        editor->SendScintilla(QsciScintilla::SCI_SETINDICATORCURRENT, 0);
+        editor->SendScintilla(QsciScintilla::SCI_INDICATORCLEARRANGE, 0, editor->length());
+    }
+    // Reiniciamos el reloj
+    timerLinter->start();
+}
+
+void MainWindow::ejecutarLinter() {
+    QsciScintilla *editor = editorActual();
+    if (!editor) return;
+
+    QString texto = editor->text();
+    if (texto.isEmpty()) return;
+
+    // Guardamos el código actual en un archivo temporal en la carpeta de la memoria caché del SO
+    // Así no machacamos el archivo real del usuario hasta que no le dé a Guardar
+    QString rutaTemp = QDir::tempPath() + "/cobolworks_linter.cbl";
+    QFile file(rutaTemp);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << texto;
+        file.close();
+    }
+
+    // Le pedimos a GnuCOBOL que compruebe solo la sintaxis, sin generar ejecutable
+    procesoLinter->start("cobc", QStringList() << "-fsyntax-only" << rutaTemp);
+}
+
+void MainWindow::leerSalidaLinter() {
+    QsciScintilla *editor = editorActual();
+    if (!editor) return;
+
+    // Leemos los errores del compilador fantasma
+    QString errores = procesoLinter->readAllStandardError();
+    if (errores.isEmpty()) return; // Si está vacío, el código es perfecto
+
+    QStringList lineasError = errores.split('\n');
+    // Buscamos las líneas de error basándonos en el nombre de nuestro archivo temporal
+    QRegularExpression re("cobolworks_linter\\.cbl:(\\d+):");
+
+    // Preparamos a Scintilla para dibujar usando el Indicador 0 (el ondulado rojo)
+    editor->SendScintilla(QsciScintilla::SCI_SETINDICATORCURRENT, 0);
+
+    for (const QString &linea : lineasError) {
+        QRegularExpressionMatch match = re.match(linea);
+        if (match.hasMatch()) {
+            int numLinea = match.captured(1).toInt() - 1; // Scintilla cuenta desde 0
+
+            if (numLinea >= 0 && numLinea < editor->lines()) {
+                // Averiguamos dónde empieza y dónde acaba la línea afectada
+                int posInicio = editor->positionFromLineIndex(numLinea, 0);
+                int longitud = editor->lineLength(numLinea);
+
+                // Pintamos el subrayado ondulado debajo de toda la línea
+                editor->SendScintilla(QsciScintilla::SCI_INDICATORFILLRANGE, posInicio, longitud);
+            }
+        }
+    }
+}
+
+void MainWindow::configurarCompilador() {
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Configuración de GnuCOBOL"));
+    dialog.resize(500, 150);
+    dialog.setStyleSheet("background-color: #0B192C; color: #E2F1E7;");
+
+    QFormLayout form(&dialog);
+
+    QSettings settings("AnabasaSoft", "CobolWorks");
+
+    QLineEdit *lineFlags = new QLineEdit(&dialog);
+    lineFlags->setStyleSheet("background-color: #1E3E62; color: white; border: 1px solid #478CCF; padding: 4px;");
+    lineFlags->setText(settings.value("compilador_flags", "").toString());
+    lineFlags->setPlaceholderText(tr("Ej: -std=cobol85 -free -I /ruta/copybooks"));
+    form.addRow(tr("Flags del compilador (cobc):"), lineFlags);
+
+    QLineEdit *lineEnv = new QLineEdit(&dialog);
+    lineEnv->setStyleSheet("background-color: #1E3E62; color: white; border: 1px solid #478CCF; padding: 4px;");
+    lineEnv->setText(settings.value("compilador_entorno", "").toString());
+    lineEnv->setPlaceholderText(tr("Ej: COB_LIBRARY_PATH=/ruta/lib; OTRO_ENV=valor"));
+    form.addRow(tr("Variables de entorno (separadas por ;):"), lineEnv);
+
+    QDialogButtonBox buttonBox(QDialogButtonBox::Ok | QDialogButtonBox::Cancel, Qt::Horizontal, &dialog);
+    buttonBox.setStyleSheet("QPushButton { background-color: #478CCF; color: white; border: none; padding: 6px; } QPushButton:hover { background-color: #2A4D77; }");
+    form.addRow(&buttonBox);
+
+    connect(&buttonBox, &QDialogButtonBox::accepted, &dialog, &QDialog::accept);
+    connect(&buttonBox, &QDialogButtonBox::rejected, &dialog, &QDialog::reject);
+
+    if (dialog.exec() == QDialog::Accepted) {
+        settings.setValue("compilador_flags", lineFlags->text());
+        settings.setValue("compilador_entorno", lineEnv->text());
+        QMessageBox::information(this, tr("Guardado"), tr("Configuración del compilador guardada correctamente."));
+    }
+}
+
+void MainWindow::actualizarAutocompletado() {
+    QsciScintilla *editor = editorActual();
+    if (!editor || !editor->lexer()) return;
+
+    // Rescatamos el motor de autocompletado de la pestaña actual
+    QsciAPIs *api = qobject_cast<QsciAPIs*>(editor->lexer()->apis());
+    if (!api) return;
+
+    api->clear(); // Limpiamos la memoria caché anterior
+
+    // 1. Inyectamos las palabras clave de COBOL básicas
+    QStringList palabrasClave = {
+        "IDENTIFICATION", "ENVIRONMENT", "DATA", "PROCEDURE", "DIVISION", "SECTION",
+        "PROGRAM-ID", "WORKING-STORAGE", "LINKAGE", "FILE", "PIC", "PICTURE",
+        "DISPLAY", "ACCEPT", "STOP", "RUN", "PERFORM", "COMPUTE", "IF", "ELSE", "END-IF",
+        "MOVE", "ADD", "SUBTRACT", "MULTIPLY", "DIVIDE", "INITIALIZE", "REPLACE", "COPY"
+    };
+    for (const QString &palabra : palabrasClave) {
+        api->add(palabra);
+    }
+
+    // 2. La Magia: Buscar Copybooks y extraer sus variables
+    QString ruta = rutaArchivoActual();
+    if (!ruta.isEmpty()) {
+        QDir dir(QFileInfo(ruta).absolutePath());
+        QStringList filtros;
+        filtros << "*.cpy" << "*.cob" << "*.cbl";
+        // Buscamos todos los archivos COBOL en la misma carpeta
+        QFileInfoList archivos = dir.entryInfoList(filtros, QDir::Files);
+
+        // Expresión regular para cazar variables (niveles 01-49, 77, 88, FD, SD)
+        QRegularExpression reVariable("^(?:0[1-9]|[1-4][0-9]|77|88|FD|SD)\\s+([a-zA-Z0-9\\-]+)");
+
+        for (const QFileInfo &info : archivos) {
+            // Añadimos el nombre del archivo al diccionario (útil cuando escriban COPY "...")
+            api->add(info.fileName());
+
+            // Si es un archivo distinto al actual, lo escaneamos por dentro
+            if (info.absoluteFilePath() != ruta) {
+                QFile file(info.absoluteFilePath());
+                if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    QTextStream in(&file);
+                    while (!in.atEnd()) {
+                        QString linea = in.readLine().trimmed();
+                        QRegularExpressionMatch match = reVariable.match(linea);
+                        if (match.hasMatch()) {
+                            // Encontramos una variable externa, ¡al autocompletado!
+                            api->add(match.captured(1));
+                        }
+                    }
+                    file.close();
+                }
+            }
+        }
+    }
+    // Compilamos el diccionario para que sea ultrarrápido al teclear
+    api->prepare();
+}
+
+void MainWindow::mostrarNavegadorFunciones() {
+    QsciScintilla *editor = editorActual();
+    if (!editor || listaEsquema->count() == 0) return;
+
+    QDialog dialog(this);
+    dialog.setWindowTitle(tr("Navegador de Funciones"));
+    dialog.resize(450, 500);
+    dialog.setStyleSheet("background-color: #0B192C; color: #E2F1E7;");
+
+    QVBoxLayout *layout = new QVBoxLayout(&dialog);
+
+    QLineEdit *buscador = new QLineEdit(&dialog);
+    buscador->setPlaceholderText(tr("Escribe para filtrar párrafos, secciones o variables..."));
+    buscador->setStyleSheet("background-color: #1E3E62; color: white; border: 1px solid #478CCF; padding: 6px; font-size: 12pt;");
+    layout->addWidget(buscador);
+
+    QListWidget *lista = new QListWidget(&dialog);
+    lista->setStyleSheet("QListWidget { background-color: #040D1A; color: #E2F1E7; border: 1px solid #1E3E62; font-family: monospace; font-size: 11pt; } QListWidget::item:selected { background-color: #478CCF; font-weight: bold; }");
+    layout->addWidget(lista);
+
+    // Clonamos los elementos que ya hemos parseado en el panel lateral de Estructura
+    for (int i = 0; i < listaEsquema->count(); ++i) {
+        QListWidgetItem *itemOriginal = listaEsquema->item(i);
+        QListWidgetItem *nuevoItem = new QListWidgetItem(itemOriginal->text().trimmed(), lista);
+        nuevoItem->setData(Qt::UserRole, itemOriginal->data(Qt::UserRole)); // Copiamos la línea exacta
+        nuevoItem->setForeground(itemOriginal->foreground()); // Mantenemos el color original (Naranja variables, Verde párrafos...)
+    }
+
+    // Magia en tiempo real: Filtramos la lista según el usuario escribe
+    connect(buscador, &QLineEdit::textChanged, [&lista](const QString &texto) {
+        for (int i = 0; i < lista->count(); ++i) {
+            QListWidgetItem *item = lista->item(i);
+            // Comprobación insensible a mayúsculas
+            item->setHidden(!item->text().contains(texto, Qt::CaseInsensitive));
+        }
+        // Seleccionamos el primer elemento visible para poder darle a Enter rápido
+        for (int i = 0; i < lista->count(); ++i) {
+            if (!lista->item(i)->isHidden()) {
+                lista->setCurrentRow(i);
+                break;
+            }
+        }
+    });
+
+    // Acción para saltar a la línea y cerrar la ventana
+    auto saltar = [this, &dialog, editor](QListWidgetItem *item) {
+        if (item) {
+            int linea = item->data(Qt::UserRole).toInt();
+            editor->setCursorPosition(linea, 0);
+            editor->ensureLineVisible(linea);
+
+            // Subrayamos la línea para que quede claro dónde hemos caído
+            editor->setSelection(linea, 0, linea, editor->lineLength(linea));
+            editor->setFocus();
+            dialog.accept();
+        }
+    };
+
+    // Saltar al hacer Doble Clic o darle a Enter sobre la lista
+    connect(lista, &QListWidget::itemActivated, saltar);
+
+    // Saltar al darle a Enter mientras escribes en el buscador
+    connect(buscador, &QLineEdit::returnPressed, [&lista, saltar]() {
+        saltar(lista->currentItem());
+    });
+
+    buscador->setFocus();
+    dialog.exec();
+}
+
+void MainWindow::actualizarDependencias() {
+    arbolDependencias->clear();
+    QsciScintilla *editor = editorActual();
+    if (!editor) return;
+
+    QString texto = editor->text();
+    QStringList lineas = texto.split('\n');
+
+    QTreeWidgetItem *nodoCopy = new QTreeWidgetItem(arbolDependencias);
+    nodoCopy->setText(0, tr("COPYBOOKs"));
+    nodoCopy->setForeground(0, QColor("#E5C07B"));
+    QFont fCopy = nodoCopy->font(0);
+    fCopy.setBold(true);
+    nodoCopy->setFont(0, fCopy);
+
+    QTreeWidgetItem *nodoCall = new QTreeWidgetItem(arbolDependencias);
+    nodoCall->setText(0, tr("Llamadas (CALL)"));
+    nodoCall->setForeground(0, QColor("#C678DD"));
+    QFont fCall = nodoCall->font(0);
+    fCall.setBold(true);
+    nodoCall->setFont(0, fCall);
+
+    // Expresiones regulares para cazar COPYs y CALLs en cualquier formato
+    QRegularExpression reCopy("COPY\\s+[\"']?([^\"'\\.\\s]+)(?:\\.cpy|\\.cob|\\.cbl)?[\"']?", QRegularExpression::CaseInsensitiveOption);
+    QRegularExpression reCall("CALL\\s+[\"']([^\"']+)[\"']", QRegularExpression::CaseInsensitiveOption);
+
+    QStringList copiesEncontrados;
+    QStringList callsEncontrados;
+
+    for (const QString &linea : lineas) {
+        QString l = linea.trimmed();
+        if (l.startsWith("*") || l.startsWith("*>")) continue; // Ignoramos comentarios
+
+        QRegularExpressionMatch matchCopy = reCopy.match(l);
+        if (matchCopy.hasMatch()) {
+            QString nombreCopy = matchCopy.captured(1);
+            if (!copiesEncontrados.contains(nombreCopy)) { // Evitamos duplicados en la lista
+                copiesEncontrados << nombreCopy;
+                QTreeWidgetItem *hijo = new QTreeWidgetItem(nodoCopy);
+                hijo->setText(0, nombreCopy);
+                hijo->setForeground(0, QColor("#98C379"));
+                hijo->setData(0, Qt::UserRole, "COPY"); // Le pegamos una etiqueta invisible
+            }
+        }
+
+        QRegularExpressionMatch matchCall = reCall.match(l);
+        if (matchCall.hasMatch()) {
+            QString nombreCall = matchCall.captured(1);
+            if (!callsEncontrados.contains(nombreCall)) {
+                callsEncontrados << nombreCall;
+                QTreeWidgetItem *hijo = new QTreeWidgetItem(nodoCall);
+                hijo->setText(0, nombreCall);
+                hijo->setForeground(0, QColor("#A6E3E9"));
+                hijo->setData(0, Qt::UserRole, "CALL"); // Etiqueta invisible
+            }
+        }
+    }
+
+    // Si no hay archivos, ocultamos las carpetas principales para dejarlo limpio
+    if (nodoCopy->childCount() == 0) delete nodoCopy;
+    if (nodoCall->childCount() == 0) delete nodoCall;
+
+    arbolDependencias->expandAll();
+}
+
+void MainWindow::abrirDependencia(QTreeWidgetItem *item, int column) {
+    // Si hace doble clic en el título de la carpeta ("COPYBOOKs") no hacemos nada
+    if (!item || item->parent() == nullptr) return;
+
+    QString tipo = item->data(0, Qt::UserRole).toString();
+    QString nombre = item->text(0);
+    QString dir = QFileInfo(rutaArchivoActual()).absolutePath();
+
+    if (tipo == "COPY") {
+        QStringList extensiones = {".cpy", ".cob", ".cbl", ".ccp", ".sqb", ""};
+        for (const QString &ext : extensiones) {
+            QString rutaCopy = dir + "/" + nombre + ext;
+            if (QFile::exists(rutaCopy)) {
+                // Comprobamos si ya está abierto para no abrirlo 2 veces
+                for (int i = 0; i < tabWidget->count(); ++i) {
+                    if (tabWidget->tabToolTip(i) == rutaCopy) {
+                        tabWidget->setCurrentIndex(i);
+                        return;
+                    }
+                }
+                QFile file(rutaCopy);
+                if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    crearNuevaPestana(QFileInfo(rutaCopy).fileName(), rutaCopy, QString::fromUtf8(file.readAll()));
+                    return;
+                }
+            }
+        }
+        statusBar()->showMessage(tr("No se encontró el archivo COPYBOOK: %1").arg(nombre), 4000);
+    } else if (tipo == "CALL") {
+        // Para los CALL, normalmente buscan un archivo de programa fuente
+        QStringList extensiones = {".cob", ".cbl", ""};
+        for (const QString &ext : extensiones) {
+            QString rutaProg = dir + "/" + nombre + ext;
+            if (QFile::exists(rutaProg)) {
+                for (int i = 0; i < tabWidget->count(); ++i) {
+                    if (tabWidget->tabToolTip(i) == rutaProg) {
+                        tabWidget->setCurrentIndex(i);
+                        return;
+                    }
+                }
+                QFile file(rutaProg);
+                if (file.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    crearNuevaPestana(QFileInfo(rutaProg).fileName(), rutaProg, QString::fromUtf8(file.readAll()));
+                    return;
+                }
+            }
+        }
+        statusBar()->showMessage(tr("No se encontró el programa fuente: %1").arg(nombre), 4000);
+    }
+}
+
+// --- FUNCIONES ENTERPRISE (GIT, DOCKER, CI/CD, APIs) ---
+
+void MainWindow::integrarGitStatus() {
+    QString ruta = rutaArchivoActual();
+    QString directorio = ruta.isEmpty() ? QDir::homePath() : QFileInfo(ruta).absolutePath();
+
+    consola->append(tr("<font color='#C678DD'>Ejecutando Git Status en %1...</font>").arg(directorio));
+
+    QProcess *gitProcess = new QProcess(this);
+    gitProcess->setWorkingDirectory(directorio);
+
+    connect(gitProcess, &QProcess::finished, [this, gitProcess]() {
+        QString salida = gitProcess->readAllStandardOutput();
+        QString errores = gitProcess->readAllStandardError();
+
+        if (!salida.isEmpty()) consola->append(salida.toHtmlEscaped());
+        if (!errores.isEmpty()) consola->append("<font color='#E06C75'>" + errores.toHtmlEscaped() + "</font>");
+
+        gitProcess->deleteLater();
+    });
+
+    gitProcess->start("git", QStringList() << "status");
+}
+
+void MainWindow::compilarEnDocker() {
+    QString ruta = rutaArchivoActual();
+    if (ruta.isEmpty()) {
+        consola->append(tr("<font color='#E06C75'>Error: Guarda el archivo antes de compilar en Docker.</font>"));
+        return;
+    }
+
+    guardarArchivo();
+    consola->clear();
+
+    QString directorio = QFileInfo(ruta).absolutePath();
+    QString nombreArchivo = QFileInfo(ruta).fileName();
+
+    consola->append(tr("<font color='#A6E3E9'>Compilando %1 dentro del contenedor oficial ghcr.io/gnu-cobol/gnucobol...</font>").arg(nombreArchivo));
+
+    QProcess *dockerProcess = new QProcess(this);
+    dockerProcess->setWorkingDirectory(directorio);
+
+    connect(dockerProcess, &QProcess::finished, [this, dockerProcess]() {
+        QString salida = dockerProcess->readAllStandardOutput();
+        QString errores = dockerProcess->readAllStandardError();
+
+        if (!salida.isEmpty()) consola->append(salida.toHtmlEscaped());
+        if (!errores.isEmpty()) consola->append("<font color='#E06C75'>" + errores.toHtmlEscaped() + "</font>");
+
+        if (dockerProcess->exitCode() == 0) {
+            consola->append(tr("<font color='#98C379'>Compilación Docker finalizada con éxito.</font>"));
+        } else {
+            consola->append(tr("<font color='#E06C75'>Error en la compilación Docker.</font>"));
+        }
+        dockerProcess->deleteLater();
+    });
+
+    // Comando: docker run --rm -v "$PWD":/workspace -w /workspace ghcr.io/gnu-cobol/gnucobol:latest cobc -x archivo.cbl
+    QStringList argumentos;
+    argumentos << "run" << "--rm"
+    << "-v" << directorio + ":/workspace"
+    << "-w" << "/workspace"
+    << "ghcr.io/gnu-cobol/gnucobol:latest"
+    << "cobc" << "-x" << nombreArchivo;
+
+    dockerProcess->start("docker", argumentos);
+}
+
+void MainWindow::generarPipelineCI() {
+    QString ruta = rutaArchivoActual();
+    QString directorio = ruta.isEmpty() ? QDir::homePath() : QFileInfo(ruta).absolutePath();
+
+    QDir dir(directorio);
+    dir.mkpath(".github/workflows"); // Crea las carpetas si no existen
+    QString pipelinePath = dir.absoluteFilePath(".github/workflows/cobol_ci.yml");
+
+    QString contenidoYAML =
+    "name: Integración Continua COBOL\n\n"
+    "on:\n"
+    "  push:\n"
+    "    branches: [ \"main\", \"master\" ]\n"
+    "  pull_request:\n"
+    "    branches: [ \"main\", \"master\" ]\n\n"
+    "jobs:\n"
+    "  build:\n"
+    "    runs-on: ubuntu-latest\n"
+    "    container:\n"
+    "      image: ghcr.io/gnu-cobol/gnucobol:latest\n"
+    "    steps:\n"
+    "      - name: Checkout del código\n"
+    "        uses: actions/checkout@v3\n\n"
+    "      - name: Compilar todos los programas COBOL\n"
+    "        run: |\n"
+    "          for file in *.cbl *.cob; do\n"
+    "            if [ -f \"$file\" ]; then\n"
+    "              echo \"Compilando $file...\"\n"
+    "              cobc -x \"$file\"\n"
+    "            fi\n"
+    "          done\n\n"
+    "      - name: Ejecutar batería de pruebas\n"
+    "        run: |\n"
+    "          echo \"Configura aquí tus scripts de testing\"\n";
+
+    QFile file(pipelinePath);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << contenidoYAML;
+        file.close();
+
+        // Abrimos el archivo en una pestaña nueva para que el usuario lo revise
+        crearNuevaPestana("cobol_ci.yml", pipelinePath, contenidoYAML);
+        consola->append(tr("<font color='#98C379'>Pipeline CI/CD creado en: %1</font>").arg(pipelinePath));
+    } else {
+        consola->append(tr("<font color='#E06C75'>Error al crear el archivo del Pipeline CI/CD.</font>"));
+    }
+}
+
+void MainWindow::generarBoilerplateAPI() {
+    // Genera una estructura base en COBOL para consumir una API REST usando utilidades del sistema
+    QString plantilla =
+    "       IDENTIFICATION DIVISION.\n"
+    "       PROGRAM-ID. ClienteAPI-REST.\n"
+    "       *> ---------------------------------------------------------\n"
+    "       *> Boilerplate generado por CobolWorks Enterprise\n"
+    "       *> Demostración de consumo de API REST desde GnuCOBOL\n"
+    "       *> ---------------------------------------------------------\n"
+    "       ENVIRONMENT DIVISION.\n"
+    "       DATA DIVISION.\n"
+    "       WORKING-STORAGE SECTION.\n"
+    "       01  WS-URL-API             PIC X(100) VALUE \"https://jsonplaceholder.typicode.com/todos/1\".\n"
+    "       01  WS-COMANDO-CURL        PIC X(200).\n"
+    "       01  WS-RESULTADO-SISTEMA   PIC S9(4) COMP.\n\n"
+    "       PROCEDURE DIVISION.\n"
+    "       000-MAIN.\n"
+    "           DISPLAY \"[INFO] Iniciando peticion REST a la API...\".\n"
+    "           \n"
+    "           *> Preparamos el comando cURL en modo silencioso\n"
+    "           STRING \"curl -s -X GET \" WS-URL-API DELIMITED BY SIZE\n"
+    "                  INTO WS-COMANDO-CURL\n"
+    "           \n"
+    "           *> Ejecutamos la llamada al sistema\n"
+    "           CALL \"SYSTEM\" USING WS-COMANDO-CURL\n"
+    "                         RETURNING WS-RESULTADO-SISTEMA.\n"
+    "           \n"
+    "           IF WS-RESULTADO-SISTEMA = 0\n"
+    "               DISPLAY \" \"\n"
+    "               DISPLAY \"[OK] Peticion finalizada con exito.\"\n"
+    "           ELSE\n"
+    "               DISPLAY \"[ERROR] Fallo al conectar con la API externa.\"\n"
+    "           END-IF.\n"
+    "           \n"
+    "           STOP RUN.\n";
+
+    crearNuevaPestana("ClienteAPI.cbl", "", plantilla);
+}
+
+void MainWindow::sincronizarCopybookRemoto() {
+    bool ok;
+    QString urlStr = QInputDialog::getText(this, tr("Importar Copybook Remoto"),
+                                           tr("Introduce la URL directa del archivo .cpy (ej: raw de GitHub, servidor interno):"),
+                                           QLineEdit::Normal, "", &ok);
+
+    if (!ok || urlStr.isEmpty()) return;
+
+    // Creamos la carpeta de caché oculta en la home del usuario
+    QString dirCache = QDir::homePath() + "/.cobolworks_copybooks";
+    QDir().mkpath(dirCache);
+
+    QUrl url(urlStr);
+    QString nombreArchivo = url.fileName();
+    if (nombreArchivo.isEmpty()) nombreArchivo = "remoto_importado.cpy";
+
+    QString rutaDestino = dirCache + "/" + nombreArchivo;
+
+    consola->append(tr("<font color='#A6E3E9'>Descargando Copybook desde %1...</font>").arg(urlStr));
+
+    // Usamos el manager que ya tienes instanciado en MainWindow para actualizaciones
+    QNetworkRequest request(url);
+    QNetworkReply *reply = managerActualizaciones->get(request);
+
+    // Conectamos la respuesta mediante una lambda temporal
+    connect(reply, &QNetworkReply::finished, [this, reply, rutaDestino, dirCache, nombreArchivo]() {
+        if (reply->error() == QNetworkReply::NoError) {
+            QFile file(rutaDestino);
+            if (file.open(QIODevice::WriteOnly)) {
+                file.write(reply->readAll());
+                file.close();
+
+                // MAGIA: Añadimos la carpeta caché a los flags del compilador automáticamente
+                QSettings settings("AnabasaSoft", "CobolWorks");
+                QString flagsActuales = settings.value("compilador_flags", "").toString();
+                QString flagInclude = "-I " + dirCache;
+
+                if (!flagsActuales.contains(flagInclude)) {
+                    settings.setValue("compilador_flags", flagsActuales + " " + flagInclude);
+                }
+
+                consola->append(tr("<font color='#98C379'>Copybook guardado en %1.</font>").arg(rutaDestino));
+                consola->append(tr("<font color='#98C379'>El compilador ya está configurado para buscar en esta ruta automáticamente (-I).</font>"));
+
+                // Lo abrimos para que el usuario lo vea
+                QFile fileLeida(rutaDestino);
+                if (fileLeida.open(QIODevice::ReadOnly | QIODevice::Text)) {
+                    crearNuevaPestana(nombreArchivo, rutaDestino, QString::fromUtf8(fileLeida.readAll()));
+                }
+            }
+        } else {
+            consola->append(tr("<font color='#E06C75'>Error al descargar el Copybook: %1</font>").arg(reply->errorString()));
+        }
+        reply->deleteLater();
+    });
+}
+
+void MainWindow::generarJCL() {
+    QString ruta = rutaArchivoActual();
+    QString directorio = ruta.isEmpty() ? QDir::homePath() : QFileInfo(ruta).absolutePath();
+    QString nombreBase = ruta.isEmpty() ? "PROGRAMA" : QFileInfo(ruta).baseName().toUpper();
+
+    QString rutaJCL = directorio + "/" + nombreBase + ".jcl";
+
+    // Plantilla clásica de JCL para IBM z/OS (MVS)
+    QString contenidoJCL =
+    "//COBOLJOB JOB (1234),'COBOL COMPILATION',CLASS=A,MSGCLASS=X,MSGLEVEL=(1,1)\n"
+    "//*\n"
+    "//* Job Control Language generado por CobolWorks IDE\n"
+    "//* Simulación de entorno Mainframe IBM z/OS\n"
+    "//*\n"
+    "//STEP1    EXEC IGYWCL\n"
+    "//COBOL.SYSIN  DD DSN=USER." + nombreBase + ".COBOL,DISP=SHR\n"
+    "//LKED.SYSLMOD DD DSN=USER.LOADLIB(" + nombreBase + "),DISP=SHR\n"
+    "//*\n"
+    "//STEP2    EXEC PGM=" + nombreBase + "\n"
+    "//STEPLIB  DD DSN=USER.LOADLIB,DISP=SHR\n"
+    "//SYSOUT   DD SYSOUT=*\n"
+    "//SYSIN    DD *\n"
+    "/* Datos de entrada aqui */\n"
+    "//\n";
+
+    QFile file(rutaJCL);
+    if (file.open(QIODevice::WriteOnly | QIODevice::Text)) {
+        QTextStream out(&file);
+        out << contenidoJCL;
+        file.close();
+
+        // Aplicamos el estándar IBM a GnuCOBOL para emular Mainframe
+        QSettings settings("AnabasaSoft", "CobolWorks");
+        QString flagsActuales = settings.value("compilador_flags", "").toString();
+        if (!flagsActuales.contains("-std=ibm-strict")) {
+            settings.setValue("compilador_flags", "-std=ibm-strict " + flagsActuales);
+            consola->append(tr("<font color='#E5C07B'>Aviso: El compilador se ha ajustado al estándar '-std=ibm-strict' para emular el Mainframe.</font>"));
+        }
+
+        crearNuevaPestana(nombreBase + ".jcl", rutaJCL, contenidoJCL);
+        consola->append(tr("<font color='#98C379'>Archivo JCL generado en: %1</font>").arg(rutaJCL));
+    }
 }

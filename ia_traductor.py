@@ -50,7 +50,10 @@ except Exception as e:
 with open(archivo_in, 'r', encoding='utf-8') as f:
     codigo_cobol = f.read()
 
-prompt = f"Traduce este código COBOL a {lenguaje} moderno. Solo devuelve el código resultante, sin explicaciones, ni formato markdown alrededor:\n\n{codigo_cobol}"
+if lenguaje == "Explicación":
+    prompt = f"Actúa como un programador experto en COBOL. Analiza este código y explica paso a paso qué hace, su flujo y variables. Usa párrafos cortos, listas y saltos de línea para que sea muy fácil de leer. Responde en español:\n\n{codigo_cobol}"
+else:
+    prompt = f"Traduce este código COBOL a {lenguaje} moderno. Solo devuelve el código resultante, sin explicaciones, ni formato markdown alrededor:\n\n{codigo_cobol}"
 
 # Usamos el nombre del modelo que hemos descubierto (modelo_elegido ya incluye la parte 'models/')
 url_generate = f"https://generativelanguage.googleapis.com/v1beta/{modelo_elegido}:generateContent?key={api_key}"
@@ -74,7 +77,9 @@ try:
         texto_generado = respuesta_json['candidates'][0]['content']['parts'][0]['text']
 
         texto_limpio = texto_generado.strip()
-        if texto_limpio.startswith("```"):
+
+        # Solo intentamos limpiar los bloques de código si NO es una explicación
+        if lenguaje != "Explicación" and texto_limpio.startswith("```"):
             lineas = texto_limpio.split('\n')
             texto_limpio = '\n'.join(lineas[1:-1])
             if texto_limpio.lower().startswith(lenguaje.lower()):

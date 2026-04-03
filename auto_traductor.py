@@ -22,7 +22,11 @@ def traducir_ts():
     # Extraemos el código de idioma para Google (ej: 'fr_FR.ts' -> 'fr')
     nombre_base = os.path.basename(archivo_ts).replace('.ts', '')
     codigo_google = nombre_base.split('_')[0].lower()
-    
+
+    # Excepción vital para el Chino Simplificado
+    if nombre_base == "zh_CN":
+        codigo_google = "zh-CN"
+
     try:
         # Configuramos el traductor: de Español al idioma detectado
         traductor = GoogleTranslator(source='es', target=codigo_google)
